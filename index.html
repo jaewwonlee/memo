@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>PT</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        min-height: 100%;
+        margin: 0;
+        background: #fff;
+      }
+
+      body {
+        color: #171717;
+        font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", "Segoe UI", sans-serif;
+        font-size: 16px;
+        line-height: 1.48;
+        letter-spacing: 0;
+        word-break: keep-all;
+      }
+
+      main {
+        min-height: 100vh;
+        padding: 16px;
+      }
+
+      #editor {
+        position: relative;
+        width: 100%;
+        min-height: calc(100vh - 32px);
+        outline: none;
+        white-space: pre-wrap;
+        overflow-wrap: break-word;
+        tab-size: 4;
+        caret-color: #111;
+      }
+
+      #editor p,
+      #editor div {
+        min-height: 1.48em;
+        margin: 0;
+      }
+
+      #editor ol,
+      #editor ul {
+        margin: 0;
+        padding-inline-start: 2.1em;
+      }
+
+      #editor ol {
+        list-style-type: decimal;
+      }
+
+      #editor ol ol {
+        list-style-type: lower-alpha;
+      }
+
+      #editor ol ol ol {
+        list-style-type: lower-roman;
+      }
+
+      #editor ul {
+        list-style: none;
+      }
+
+      #editor ul > li {
+        position: relative;
+      }
+
+      #editor ul > li::before {
+        content: "•";
+        position: absolute;
+        right: calc(100% + 0.55em);
+        white-space: nowrap;
+      }
+
+      #editor li::marker {
+        font-variant-numeric: tabular-nums;
+      }
+
+      #editor * {
+        text-decoration-color: currentColor;
+      }
+
+      #editor .has-indent-marker {
+        padding-inline-start: var(--indent-here, 0px);
+        text-indent: calc(-1 * var(--indent-here, 0px));
+      }
+
+      #editor .indent-marker {
+        position: relative;
+        display: inline-block;
+        width: 0;
+        height: 1em;
+        overflow: visible;
+        text-indent: 0;
+        user-select: none;
+      }
+
+      #editor .indent-marker::after {
+        content: "†";
+        position: absolute;
+        left: -0.12em;
+        top: -0.45em;
+        color: #a8a8a8;
+        font-size: 0.68em;
+        font-style: normal;
+        font-weight: 400;
+        line-height: 1;
+        opacity: 0.55;
+      }
+
+      #editor:not(:focus) .indent-marker::after {
+        opacity: 0.2;
+      }
+
+      ::selection {
+        background: #dbe8ff;
+      }
+
+    </style>
+  </head>
+  <body>
+    <main>
+      <div
+        id="editor"
+        class="is-empty"
+        contenteditable="true"
+        role="textbox"
+        aria-label="메모"
+        aria-multiline="true"
+        spellcheck="true"
+      ></div>
+    </main>
+
+    <script>
+      (() => {
+        const editor = document.querySelector('#editor');
+        const storageKey = 'pt-editor-document-v1';
+        const textColors = ['#171717', '#c83f49', '#2f64c8', '#247b5b', '#7a4aa0'];
+        const backgroundColors = ['#fff09a', '#ffd4d8', '#d7e5ff', '#cfeedd', '#eadcf5'];
+        let saveTimer = 0;
+
+        const saved = readSavedDocument();
+        editor.innerHTML = saved || '<p><br></p>';
+        updateEmptyState();
+        editor.focus();
+        if (!saved && editor.firstElementChild) setCaret(editor.firstElementChild, 0);
+
+        function readSavedDocument() {
+          try {
+            return localStorage.getItem(storageKey);
+          } catch {
+            return null;
+          }
+        }
+
+        function updateEmptyState() {
+          const empty = editor.textContent.replace(/\u2060/g, '').trim() === '' && !editor.querySelector('img');
+          editor.classList.toggle('is-empty', empty);
+        }
+
+        function saveNow() {
+          clearTimeout(saveTimer);
+          cleanupIndentMarkers();
+          try {
+            localStorage.setItem(storageKey, editor.innerHTML);
+          } catch {
+            // 일부 브라우저의 로컬 파일 모드에서는 저장소가 차단될 수 있다.
+          }
+          updateEmptyState();
+        }
+
+        function scheduleSave() {
+          clearTimeout(saveTimer);
+          saveTimer = window.setTimeout(saveNow, 100);
+          updateEmptyState();
+        }
+
+        function selectionRange(requireText = false) {
+          const selection = window.getSelection();
+          if (!selection || selection.rangeCount === 0) return null;
+          const range = selection.getRangeAt(0);
+          if (!editor.contains(range.commonAncestorContainer)) return null;
+          if (requireText && range.collapsed) return null;
+          return range;
+        }
+
+        function setCaret(node, offset = 0) {
+          const range = document.createRange();
+          const selection = window.getSelection();
+          range.setStart(node, offset);
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+
+        function runCommand(command, value = null) {
+          document.execCommand('styleWithCSS', false, true);
+          const result = document.execCommand(command, false, value);
+          saveNow();
+          return result;
+        }
+
+        function applyBackground(color) {
+          document.execCommand('styleWithCSS', false, true);
+          if (!document.execCommand('hiliteColor', false, color)) {
+            document.execCommand('backColor', false, color);
+          }
+          saveNow();
+        }
+
+        function applyAlignment(alignment) {
+          const range = selectionRange();
+          if (!range) return;
+
+          const candidates = [...editor.querySelectorAll('p, div, li')];
+          let blocks = candidates.filter((block) => {
+            try {
+              return range.intersectsNode(block);
+            } catch {
+              return false;
+            }
+          });
+
+          if (range.collapsed || blocks.length === 0) {
+            blocks = [closestBlock(range.startContainer)];
+          }
+
+          blocks.forEach((block) => {
+            block.style.textAlign = alignment;
+          });
+          saveNow();
+        }
+
+        function closestBlock(node) {
+          let element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+          while (element && element !== editor) {
+            if (/^(P|DIV|LI)$/.test(element.tagName)) return element;
+            element = element.parentElement;
+          }
+          return editor;
+        }
+
+        function currentListItem() {
+          const range = selectionRange();
+          if (!range) return null;
+          const element = range.startContainer.nodeType === Node.ELEMENT_NODE
+            ? range.startContainer
+            : range.startContainer.parentElement;
+          return element && element.closest('li');
+        }
+
+        function insertText(text) {
+          document.execCommand('insertText', false, text);
+          saveNow();
+        }
+
+        function transformMarkerToList(marker) {
+          const range = selectionRange();
+          if (!range || !range.collapsed) return false;
+          const block = closestBlock(range.startContainer);
+          const text = block.textContent.trim();
+          const orderedMatch = text.match(/^(\d+)\.$/);
+          const unordered = text === '-';
+          if (!unordered && !orderedMatch) return false;
+
+          const list = document.createElement(unordered ? 'ul' : 'ol');
+          if (orderedMatch && Number(orderedMatch[1]) !== 1) {
+            list.start = Number(orderedMatch[1]);
+          }
+          const item = document.createElement('li');
+          item.appendChild(document.createElement('br'));
+          list.appendChild(item);
+
+          if (block === editor) {
+            editor.replaceChildren(list);
+          } else {
+            block.replaceWith(list);
+          }
+          setCaret(item, 0);
+          saveNow();
+          return true;
+        }
+
+        function previousCharacter(range) {
+          const probe = range.cloneRange();
+          probe.setStart(editor, 0);
+          return probe.toString().slice(-1);
+        }
+
+        function smartQuote(mark) {
+          const range = selectionRange();
+          if (!range) return;
+          const previous = previousCharacter(range);
+          const opening = !previous || /[\s([{<—–]/.test(previous);
+          insertText(mark === '"' ? (opening ? '“' : '”') : (opening ? '‘' : '’'));
+        }
+
+        function insertIndentHere() {
+          const range = selectionRange();
+          if (!range) return;
+          const block = closestBlock(range.startContainer);
+          if (block === editor) return;
+
+          block.querySelectorAll(':scope > .indent-marker').forEach((marker) => marker.remove());
+          const marker = document.createElement('span');
+          marker.className = 'indent-marker';
+          marker.dataset.indentMarker = 'true';
+          marker.contentEditable = 'false';
+          marker.setAttribute('aria-hidden', 'true');
+          marker.textContent = '\u2060';
+          range.insertNode(marker);
+
+          const blockRect = block.getBoundingClientRect();
+          const markerRect = marker.getBoundingClientRect();
+          const position = Math.max(0, Math.min(markerRect.left - blockRect.left, blockRect.width * 0.75));
+          block.classList.add('has-indent-marker');
+          block.style.setProperty('--indent-here', `${position}px`);
+
+          const selection = window.getSelection();
+          range.setStartAfter(marker);
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          saveNow();
+        }
+
+        function cleanupIndentMarkers() {
+          editor.querySelectorAll('.has-indent-marker').forEach((block) => {
+            if (!block.querySelector('.indent-marker')) {
+              block.classList.remove('has-indent-marker');
+              block.style.removeProperty('--indent-here');
+            }
+          });
+        }
+
+        editor.addEventListener('beforeinput', (event) => {
+          if (event.isComposing) return;
+
+          if (event.inputType === 'insertText' && event.data === ' ') {
+            const range = selectionRange();
+            if (range) {
+              const block = closestBlock(range.startContainer);
+              const marker = block.textContent.trim();
+              if (marker === '-' || /^\d+\.$/.test(marker)) {
+                event.preventDefault();
+                transformMarkerToList(marker);
+                return;
+              }
+            }
+          }
+
+          if (event.inputType === 'insertText' && (event.data === '"' || event.data === "'")) {
+            event.preventDefault();
+            smartQuote(event.data);
+          }
+        });
+
+        editor.addEventListener('keydown', (event) => {
+          const key = event.key.toLowerCase();
+          const selectedText = Boolean(selectionRange(true));
+
+          if (event.metaKey && !event.altKey && !event.ctrlKey && key === 'b') {
+            event.preventDefault();
+            runCommand('bold');
+            return;
+          }
+
+          if (event.metaKey && event.shiftKey && !event.altKey && key === 'x') {
+            event.preventDefault();
+            runCommand('strikeThrough');
+            return;
+          }
+
+          if (!event.metaKey && !event.altKey && !event.ctrlKey && event.shiftKey && key === 'u' && selectedText) {
+            event.preventDefault();
+            runCommand('underline');
+            return;
+          }
+
+          if (!event.metaKey && !event.altKey && !event.ctrlKey && event.shiftKey && key === 'i' && selectedText) {
+            event.preventDefault();
+            runCommand('italic');
+            return;
+          }
+
+          const digitMatch = event.code.match(/^Digit([1-5])$/);
+          if (digitMatch && event.altKey && !event.shiftKey && !event.ctrlKey && selectedText) {
+            event.preventDefault();
+            const index = Number(digitMatch[1]) - 1;
+            if (event.metaKey) applyBackground(backgroundColors[index]);
+            else runCommand('foreColor', textColors[index]);
+            return;
+          }
+
+          const alignmentByCode = {
+            KeyL: 'left',
+            KeyE: 'center',
+            KeyR: 'right',
+          };
+          if (event.ctrlKey && event.metaKey && !event.altKey && alignmentByCode[event.code]) {
+            event.preventDefault();
+            event.stopPropagation();
+            applyAlignment(alignmentByCode[event.code]);
+            return;
+          }
+
+          if (event.metaKey && !event.altKey && !event.ctrlKey && event.code === 'Backslash') {
+            event.preventDefault();
+            insertIndentHere();
+            return;
+          }
+
+          if (event.key === 'Tab') {
+            event.preventDefault();
+            if (currentListItem()) {
+              runCommand(event.shiftKey ? 'outdent' : 'indent');
+            } else if (!event.shiftKey) {
+              insertText('\t');
+            }
+            return;
+          }
+
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            runCommand(event.shiftKey ? 'insertLineBreak' : 'insertParagraph');
+          }
+        });
+
+        editor.addEventListener('input', scheduleSave);
+        editor.addEventListener('blur', saveNow);
+        window.addEventListener('beforeunload', saveNow);
+      })();
+    </script>
+  </body>
+</html>
