@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <title>PT</title>
+    <title>Memo</title>
     <style>
       :root {
         color-scheme: light;
@@ -47,14 +47,34 @@
       }
 
       #editor p,
-      #editor div {
+      #editor div,
+      #editor h1 {
         min-height: 1.48em;
         margin: 0;
+      }
+
+      #editor h1 {
+        font-size: 32px;
+        font-weight: 700;
+        line-height: 1.25;
+      }
+
+      #editor hr {
+        height: 0;
+        margin: 0.74em 0;
+        border: 0;
+        border-top: 1px solid currentColor;
       }
 
       #editor ol,
       #editor ul {
         margin: 0;
+        padding-inline-start: 0;
+        list-style-position: inside;
+      }
+
+      #editor li > ol,
+      #editor li > ul {
         padding-inline-start: 2.1em;
       }
 
@@ -71,18 +91,7 @@
       }
 
       #editor ul {
-        list-style: none;
-      }
-
-      #editor ul > li {
-        position: relative;
-      }
-
-      #editor ul > li::before {
-        content: "•";
-        position: absolute;
-        right: calc(100% + 0.55em);
-        white-space: nowrap;
+        list-style-type: "•  ";
       }
 
       #editor li::marker {
@@ -140,16 +149,29 @@
         role="textbox"
         aria-label="메모"
         aria-multiline="true"
-        spellcheck="true"
+        spellcheck="false"
+        autocorrect="off"
+        autocapitalize="off"
       ></div>
     </main>
 
     <script>
       (() => {
         const editor = document.querySelector('#editor');
-        const storageKey = 'pt-editor-document-v1';
-        const textColors = ['#171717', '#c83f49', '#2f64c8', '#247b5b', '#7a4aa0'];
-        const backgroundColors = ['#fff09a', '#ffd4d8', '#d7e5ff', '#cfeedd', '#eadcf5'];
+        const storageKey = 'memo-editor-document-v1';
+        const legacyStorageKey = 'pt-editor-document-v1';
+        const colors = [
+          '#000000',
+          '#4A85E8',
+          '#00FF00',
+          '#FFFF00',
+          '#FF0000',
+          '#9900FF',
+          '#783F04',
+          '#FF00FF',
+          '#999999',
+          'rgba(0, 0, 0, 0.3)',
+        ];
         let saveTimer = 0;
 
         const saved = readSavedDocument();
@@ -160,7 +182,11 @@
 
         function readSavedDocument() {
           try {
-            return localStorage.getItem(storageKey);
+            const current = localStorage.getItem(storageKey);
+            if (current !== null) return current;
+            const legacy = localStorage.getItem(legacyStorageKey);
+            if (legacy !== null) localStorage.setItem(storageKey, legacy);
+            return legacy;
           } catch {
             return null;
           }
@@ -225,7 +251,7 @@
           const range = selectionRange();
           if (!range) return;
 
-          const candidates = [...editor.querySelectorAll('p, div, li')];
+          const candidates = [...editor.querySelectorAll('p, div, h1, li')];
           let blocks = candidates.filter((block) => {
             try {
               return range.intersectsNode(block);
@@ -247,7 +273,7 @@
         function closestBlock(node) {
           let element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
           while (element && element !== editor) {
-            if (/^(P|DIV|LI)$/.test(element.tagName)) return element;
+            if (/^(P|DIV|H1|LI)$/.test(element.tagName)) return element;
             element = element.parentElement;
           }
           return editor;
@@ -292,6 +318,54 @@
           setCaret(item, 0);
           saveNow();
           return true;
+        }
+
+        function replaceBlock(block, replacement) {
+          if (block === editor) {
+            editor.replaceChildren(replacement);
+          } else {
+            block.replaceWith(replacement);
+          }
+        }
+
+        function transformMarkerToHeading() {
+          const range = selectionRange();
+          if (!range || !range.collapsed) return false;
+          const block = closestBlock(range.startContainer);
+          if (block.textContent !== '#') return false;
+
+          const heading = document.createElement('h1');
+          heading.appendChild(document.createElement('br'));
+          replaceBlock(block, heading);
+          setCaret(heading, 0);
+          saveNow();
+          return true;
+        }
+
+        function transformMarkerToRule() {
+          const range = selectionRange();
+          if (!range || !range.collapsed) return false;
+          const block = closestBlock(range.startContainer);
+          if (block.textContent !== '--') return false;
+
+          const rule = document.createElement('hr');
+          const paragraph = document.createElement('p');
+          paragraph.appendChild(document.createElement('br'));
+
+          if (block === editor) {
+            editor.replaceChildren(rule, paragraph);
+          } else {
+            block.replaceWith(rule, paragraph);
+          }
+          setCaret(paragraph, 0);
+          saveNow();
+          return true;
+        }
+
+        function exitHeading() {
+          document.execCommand('insertParagraph', false);
+          document.execCommand('formatBlock', false, 'p');
+          saveNow();
         }
 
         function previousCharacter(range) {
@@ -354,11 +428,25 @@
             if (range) {
               const block = closestBlock(range.startContainer);
               const marker = block.textContent.trim();
+              if (marker === '#') {
+                event.preventDefault();
+                transformMarkerToHeading();
+                return;
+              }
               if (marker === '-' || /^\d+\.$/.test(marker)) {
                 event.preventDefault();
                 transformMarkerToList(marker);
                 return;
               }
+            }
+          }
+
+          if (event.inputType === 'insertText' && event.data === '-') {
+            const range = selectionRange();
+            if (range && closestBlock(range.startContainer).textContent === '--') {
+              event.preventDefault();
+              transformMarkerToRule();
+              return;
             }
           }
 
@@ -396,12 +484,12 @@
             return;
           }
 
-          const digitMatch = event.code.match(/^Digit([1-5])$/);
+          const digitMatch = event.code.match(/^Digit([0-9])$/);
           if (digitMatch && event.altKey && !event.shiftKey && !event.ctrlKey && selectedText) {
             event.preventDefault();
-            const index = Number(digitMatch[1]) - 1;
-            if (event.metaKey) applyBackground(backgroundColors[index]);
-            else runCommand('foreColor', textColors[index]);
+            const index = Number(digitMatch[1]);
+            if (event.metaKey) applyBackground(colors[index]);
+            else runCommand('foreColor', colors[index]);
             return;
           }
 
@@ -435,6 +523,11 @@
 
           if (event.key === 'Enter') {
             event.preventDefault();
+            const range = selectionRange();
+            if (!event.shiftKey && range && closestBlock(range.startContainer).tagName === 'H1') {
+              exitHeading();
+              return;
+            }
             runCommand(event.shiftKey ? 'insertLineBreak' : 'insertParagraph');
           }
         });
