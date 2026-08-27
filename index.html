@@ -60,10 +60,10 @@
       }
 
       #editor hr {
-        height: 0;
-        margin: 0.74em 0;
+        height: 1.48em;
+        margin: 0;
         border: 0;
-        border-top: 1px solid currentColor;
+        background: linear-gradient(currentColor, currentColor) center / 100% 1px no-repeat;
       }
 
       #editor ol,
@@ -239,10 +239,50 @@
           return result;
         }
 
+        function normalizeBackgroundColor(color) {
+          const probe = document.createElement('span');
+          probe.style.backgroundColor = color;
+          editor.appendChild(probe);
+          const normalized = getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          return normalized;
+        }
+
+        function selectedTextNodes(range) {
+          const nodes = [];
+          const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+          let node = walker.nextNode();
+          while (node) {
+            if (node.nodeValue && range.intersectsNode(node)) nodes.push(node);
+            node = walker.nextNode();
+          }
+          return nodes;
+        }
+
+        function effectiveBackgroundColor(node) {
+          let element = node.parentElement;
+          while (element && element !== editor) {
+            const color = getComputedStyle(element).backgroundColor;
+            if (color && color !== 'transparent' && color !== 'rgba(0, 0, 0, 0)') return color;
+            element = element.parentElement;
+          }
+          return 'rgba(0, 0, 0, 0)';
+        }
+
+        function selectionHasBackground(color) {
+          const range = selectionRange(true);
+          if (!range) return false;
+          const nodes = selectedTextNodes(range);
+          if (nodes.length === 0) return false;
+          const target = normalizeBackgroundColor(color);
+          return nodes.every((node) => effectiveBackgroundColor(node) === target);
+        }
+
         function applyBackground(color) {
+          const nextColor = selectionHasBackground(color) ? 'transparent' : color;
           document.execCommand('styleWithCSS', false, true);
-          if (!document.execCommand('hiliteColor', false, color)) {
-            document.execCommand('backColor', false, color);
+          if (!document.execCommand('hiliteColor', false, nextColor)) {
+            document.execCommand('backColor', false, nextColor);
           }
           saveNow();
         }
@@ -349,15 +389,26 @@
           if (block.textContent !== '--') return false;
 
           const rule = document.createElement('hr');
-          const paragraph = document.createElement('p');
-          paragraph.appendChild(document.createElement('br'));
+          let caretTarget = block.nextElementSibling;
 
           if (block === editor) {
+            const paragraph = document.createElement('p');
+            paragraph.appendChild(document.createElement('br'));
             editor.replaceChildren(rule, paragraph);
+            caretTarget = paragraph;
           } else {
-            block.replaceWith(rule, paragraph);
+            block.replaceWith(rule);
+            if (caretTarget && /^(UL|OL)$/.test(caretTarget.tagName)) {
+              caretTarget = caretTarget.querySelector('li');
+            }
+            if (!caretTarget || caretTarget.tagName === 'HR') {
+              const paragraph = document.createElement('p');
+              paragraph.appendChild(document.createElement('br'));
+              rule.after(paragraph);
+              caretTarget = paragraph;
+            }
           }
-          setCaret(paragraph, 0);
+          setCaret(caretTarget, 0);
           saveNow();
           return true;
         }
