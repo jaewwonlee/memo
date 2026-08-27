@@ -176,9 +176,14 @@
 
         const saved = readSavedDocument();
         editor.innerHTML = saved || '<p><br></p>';
-        updateEmptyState();
+        const repairedStoredStructure = repairStoredListStructure();
+        const normalizedStoredDocument = normalizeEmptyEditor();
+        if (repairedStoredStructure || normalizedStoredDocument) saveNow();
+        else updateEmptyState();
         editor.focus();
-        if (!saved && editor.firstElementChild) setCaret(editor.firstElementChild, 0);
+        if ((!saved || normalizedStoredDocument) && editor.firstElementChild) {
+          setCaret(editor.firstElementChild, 0);
+        }
 
         function readSavedDocument() {
           try {
@@ -467,6 +472,49 @@
           editor.replaceChildren(paragraph);
           setCaret(paragraph, 0);
           return true;
+        }
+
+        function moveInvalidListChildOut(child) {
+          const list = child.parentElement;
+          const trailingList = list.cloneNode(false);
+
+          let sibling = child.nextSibling;
+          while (sibling) {
+            const next = sibling.nextSibling;
+            trailingList.appendChild(sibling);
+            sibling = next;
+          }
+
+          child.remove();
+          list.after(child);
+          if (trailingList.hasChildNodes()) child.after(trailingList);
+          if (!list.hasChildNodes()) list.remove();
+        }
+
+        function repairStoredListStructure() {
+          let repaired = false;
+
+          editor.querySelectorAll('ul > ul, ul > ol, ol > ul, ol > ol').forEach((nestedList) => {
+            const previousItem = nestedList.previousElementSibling;
+            if (previousItem && previousItem.tagName === 'LI') previousItem.appendChild(nestedList);
+            else moveInvalidListChildOut(nestedList);
+            repaired = true;
+          });
+
+          editor.querySelectorAll('ul > p, ul > div, ul > h1, ul > hr, ol > p, ol > div, ol > h1, ol > hr')
+            .forEach((block) => {
+              moveInvalidListChildOut(block);
+              repaired = true;
+            });
+
+          editor.querySelectorAll('ul > br, ol > br').forEach((breakElement) => {
+            const item = document.createElement('li');
+            breakElement.replaceWith(item);
+            item.appendChild(breakElement);
+            repaired = true;
+          });
+
+          return repaired;
         }
 
         function transformCompletedPrefix() {
