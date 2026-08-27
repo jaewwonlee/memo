@@ -319,13 +319,20 @@
           return editor;
         }
 
+        function closestElement(node, selector) {
+          const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+          const match = element && element.closest(selector);
+          return match && editor.contains(match) ? match : null;
+        }
+
+        function currentHeading() {
+          const range = selectionRange();
+          return range ? closestElement(range.startContainer, 'h1') : null;
+        }
+
         function currentListItem() {
           const range = selectionRange();
-          if (!range) return null;
-          const element = range.startContainer.nodeType === Node.ELEMENT_NODE
-            ? range.startContainer
-            : range.startContainer.parentElement;
-          return element && element.closest('li');
+          return range ? closestElement(range.startContainer, 'li') : null;
         }
 
         function insertText(text) {
@@ -350,19 +357,34 @@
           item.appendChild(document.createElement('br'));
           list.appendChild(item);
 
-          if (block === editor) {
-            editor.replaceChildren(list);
-          } else {
-            block.replaceWith(list);
-          }
+          replaceBlock(block, list);
           setCaret(item, 0);
           saveNow();
           return true;
         }
 
+        function replaceListItemWithBlock(item, replacement) {
+          const list = item.parentElement;
+          const trailingList = list.cloneNode(false);
+
+          let sibling = item.nextSibling;
+          while (sibling) {
+            const next = sibling.nextSibling;
+            trailingList.appendChild(sibling);
+            sibling = next;
+          }
+
+          item.remove();
+          list.after(replacement);
+          if (trailingList.hasChildNodes()) replacement.after(trailingList);
+          if (!list.hasChildNodes()) list.remove();
+        }
+
         function replaceBlock(block, replacement) {
           if (block === editor) {
             editor.replaceChildren(replacement);
+          } else if (block.tagName === 'LI') {
+            replaceListItemWithBlock(block, replacement);
           } else {
             block.replaceWith(replacement);
           }
@@ -372,7 +394,7 @@
           const range = selectionRange();
           if (!range || !range.collapsed) return false;
           const block = closestBlock(range.startContainer);
-          if (block.textContent !== '#') return false;
+          if (block.textContent.trim() !== '#') return false;
 
           const heading = document.createElement('h1');
           heading.appendChild(document.createElement('br'));
@@ -413,11 +435,9 @@
           return true;
         }
 
-        function exitHeading() {
+        function exitHeading(heading = currentHeading()) {
           const range = selectionRange();
-          if (!range) return;
-          const heading = closestBlock(range.startContainer);
-          if (heading.tagName !== 'H1') return;
+          if (!range || !heading) return;
 
           if (!range.collapsed) range.deleteContents();
 
@@ -438,8 +458,59 @@
           saveNow();
         }
 
+        function normalizeEmptyEditor() {
+          const hasContent = editor.textContent.replace(/\u2060/g, '').trim() !== '' || editor.querySelector('img, hr');
+          if (hasContent) return false;
+
+          const paragraph = document.createElement('p');
+          paragraph.appendChild(document.createElement('br'));
+          editor.replaceChildren(paragraph);
+          setCaret(paragraph, 0);
+          return true;
+        }
+
+        function transformCompletedPrefix() {
+          const range = selectionRange();
+          if (!range || !range.collapsed) return false;
+          const block = closestBlock(range.startContainer);
+          const text = block.textContent;
+
+          if (text === '# ') return transformMarkerToHeading();
+          const match = text.match(/^(-|\d+\.) $/);
+          return match ? transformMarkerToList(match[1]) : false;
+        }
+
         function isEmptyListItem(item) {
           return item.textContent.replace(/\u2060/g, '').trim() === '' && !item.querySelector('img, hr');
+        }
+
+        function indentListItem(item) {
+          const list = item.parentElement;
+          const previousItem = item.previousElementSibling;
+          if (!list || !previousItem || previousItem.tagName !== 'LI') return false;
+
+          let nestedList = [...previousItem.children].find((child) => child.tagName === list.tagName);
+          if (!nestedList) {
+            nestedList = document.createElement(list.tagName.toLowerCase());
+            previousItem.appendChild(nestedList);
+          }
+          nestedList.appendChild(item);
+          setCaret(item, item.childNodes.length);
+          saveNow();
+          return true;
+        }
+
+        function outdentListItem(item) {
+          const list = item.parentElement;
+          const parentItem = list && list.parentElement && list.parentElement.closest('li');
+          if (!parentItem) return false;
+
+          const outerList = parentItem.parentElement;
+          outerList.insertBefore(item, parentItem.nextSibling);
+          if (!list.hasChildNodes()) list.remove();
+          setCaret(item, item.childNodes.length);
+          saveNow();
+          return true;
         }
 
         function exitEmptyListItem(item) {
@@ -447,7 +518,7 @@
           const parentItem = list && list.parentElement && list.parentElement.closest('li');
 
           if (parentItem) {
-            runCommand('outdent');
+            outdentListItem(item);
             return;
           }
 
@@ -616,8 +687,10 @@
 
           if (event.key === 'Tab') {
             event.preventDefault();
-            if (currentListItem()) {
-              runCommand(event.shiftKey ? 'outdent' : 'indent');
+            const listItem = currentListItem();
+            if (listItem) {
+              if (event.shiftKey) outdentListItem(listItem);
+              else indentListItem(listItem);
             } else if (!event.shiftKey) {
               insertText('\t');
             }
@@ -626,21 +699,27 @@
 
           if (event.key === 'Enter') {
             event.preventDefault();
-            const range = selectionRange();
-            const block = range && closestBlock(range.startContainer);
-            if (!event.shiftKey && block && block.tagName === 'H1') {
-              exitHeading();
+            const heading = currentHeading();
+            const listItem = currentListItem();
+            if (!event.shiftKey && heading) {
+              exitHeading(heading);
               return;
             }
-            if (!event.shiftKey && block && block.tagName === 'LI' && isEmptyListItem(block)) {
-              exitEmptyListItem(block);
+            if (!event.shiftKey && listItem && isEmptyListItem(listItem)) {
+              exitEmptyListItem(listItem);
               return;
             }
             runCommand(event.shiftKey ? 'insertLineBreak' : 'insertParagraph');
           }
         });
 
-        editor.addEventListener('input', scheduleSave);
+        editor.addEventListener('input', () => {
+          if (!normalizeEmptyEditor()) transformCompletedPrefix();
+          scheduleSave();
+        });
+        editor.addEventListener('compositionend', () => {
+          if (transformCompletedPrefix()) scheduleSave();
+        });
         editor.addEventListener('blur', saveNow);
         window.addEventListener('beforeunload', saveNow);
       })();
