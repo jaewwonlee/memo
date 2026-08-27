@@ -414,8 +414,60 @@
         }
 
         function exitHeading() {
-          document.execCommand('insertParagraph', false);
-          document.execCommand('formatBlock', false, 'p');
+          const range = selectionRange();
+          if (!range) return;
+          const heading = closestBlock(range.startContainer);
+          if (heading.tagName !== 'H1') return;
+
+          if (!range.collapsed) range.deleteContents();
+
+          const tailRange = document.createRange();
+          tailRange.setStart(range.startContainer, range.startOffset);
+          tailRange.setEnd(heading, heading.childNodes.length);
+          const tail = tailRange.extractContents();
+
+          const paragraph = document.createElement('p');
+          if (tail.hasChildNodes()) paragraph.appendChild(tail);
+          else paragraph.appendChild(document.createElement('br'));
+
+          if (!heading.hasChildNodes() || heading.textContent === '') {
+            heading.replaceChildren(document.createElement('br'));
+          }
+          heading.after(paragraph);
+          setCaret(paragraph, 0);
+          saveNow();
+        }
+
+        function isEmptyListItem(item) {
+          return item.textContent.replace(/\u2060/g, '').trim() === '' && !item.querySelector('img, hr');
+        }
+
+        function exitEmptyListItem(item) {
+          const list = item.parentElement;
+          const parentItem = list && list.parentElement && list.parentElement.closest('li');
+
+          if (parentItem) {
+            runCommand('outdent');
+            return;
+          }
+
+          const paragraph = document.createElement('p');
+          paragraph.appendChild(document.createElement('br'));
+          const trailingList = list.cloneNode(false);
+
+          let sibling = item.nextSibling;
+          while (sibling) {
+            const next = sibling.nextSibling;
+            trailingList.appendChild(sibling);
+            sibling = next;
+          }
+
+          item.remove();
+          if (trailingList.hasChildNodes()) list.after(paragraph, trailingList);
+          else list.after(paragraph);
+          if (!list.hasChildNodes()) list.remove();
+
+          setCaret(paragraph, 0);
           saveNow();
         }
 
@@ -575,8 +627,13 @@
           if (event.key === 'Enter') {
             event.preventDefault();
             const range = selectionRange();
-            if (!event.shiftKey && range && closestBlock(range.startContainer).tagName === 'H1') {
+            const block = range && closestBlock(range.startContainer);
+            if (!event.shiftKey && block && block.tagName === 'H1') {
               exitHeading();
+              return;
+            }
+            if (!event.shiftKey && block && block.tagName === 'LI' && isEmptyListItem(block)) {
+              exitEmptyListItem(block);
               return;
             }
             runCommand(event.shiftKey ? 'insertLineBreak' : 'insertParagraph');
